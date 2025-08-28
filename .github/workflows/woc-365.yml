@@ -46,14 +46,14 @@ jobs:
       - name: Fetch private repo resources
         uses: actions/checkout@v4
         with:
-          repository: ${{ env.PRIVATE_REPO_OWNER }}/${{ env.PRIVATE_REPO_NAME }}
+          repository: ${{ secrets.PRIVATE_REPO_OWNER }}/${{ secrets.PRIVATE_REPO_NAME }}
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
-          path: ${{ env.TEMP_SCRIPTS_DIR }}
-          ref: ${{ env.PRIVATE_REPO_BRANCH }}
+          path: ${{ secrets.TEMP_SCRIPTS_DIR }}
+          ref: ${{ secrets.PRIVATE_REPO_BRANCH }}
           sparse-checkout: |
-            ${{ env.CUSTOMERS_CONFIG_PATH }}
-            ${{ env.MAESTER_SCRIPTS_PATH }}
-            ${{ env.PACKAGE_FILES_PATH }}
+            ${{ secrets.CUSTOMERS_CONFIG_PATH }}
+            ${{ secrets.MAESTER_SCRIPTS_PATH }}
+            ${{ secrets.PACKAGE_FILES_PATH }}
 
       - name: Generate tenant matrix
         id: generate
@@ -61,7 +61,7 @@ jobs:
         env:
           CUSTOMER_FILTER: ${{ github.event.inputs.customer_filter }}
           TENANT_FILTER: ${{ github.event.inputs.tenant_filter }}
-          CONFIG_PATH: ${{ env.TEMP_SCRIPTS_DIR }}/${{ env.CUSTOMERS_CONFIG_PATH }}
+          CONFIG_PATH: ${{ secrets.TEMP_SCRIPTS_DIR }}/${{ secrets.CUSTOMERS_CONFIG_PATH }}
         with:
           script: |
             const fs = require('fs');
@@ -120,13 +120,13 @@ jobs:
       - name: Fetch private repo resources
         uses: actions/checkout@v4
         with:
-          repository: ${{ env.PRIVATE_REPO_OWNER }}/${{ env.PRIVATE_REPO_NAME }}
+          repository: ${{ secrets.PRIVATE_REPO_OWNER }}/${{ secrets.PRIVATE_REPO_NAME }}
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
-          path: ${{ env.TEMP_SCRIPTS_DIR }}
-          ref: ${{ env.PRIVATE_REPO_BRANCH }}
+          path: ${{ secrets.TEMP_SCRIPTS_DIR }}
+          ref: ${{ secrets.PRIVATE_REPO_BRANCH }}
           sparse-checkout: |
-            ${{ env.MAESTER_SCRIPTS_PATH }}
-            ${{ env.PACKAGE_FILES_PATH }}
+            ${{ secrets.MAESTER_SCRIPTS_PATH }}
+            ${{ secrets.PACKAGE_FILES_PATH }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -135,14 +135,14 @@ jobs:
 
       - name: Install dependencies
         run: |
-          cp ${{ env.TEMP_SCRIPTS_DIR }}/${{ env.PACKAGE_FILES_PATH }}/package.json .
-          cp ${{ env.TEMP_SCRIPTS_DIR }}/${{ env.PACKAGE_FILES_PATH }}/package-lock.json .
+          cp ${{ secrets.TEMP_SCRIPTS_DIR }}/${{ secrets.PACKAGE_FILES_PATH }}/package.json .
+          cp ${{ secrets.TEMP_SCRIPTS_DIR }}/${{ secrets.PACKAGE_FILES_PATH }}/package-lock.json .
           npm ci --no-audit --no-fund
 
       - name: Copy private scripts
         run: |
           mkdir -p .github/maester
-          cp -r ${{ env.TEMP_SCRIPTS_DIR }}/${{ env.MAESTER_SCRIPTS_PATH }}/* .github/maester/
+          cp -r ${{ secrets.TEMP_SCRIPTS_DIR }}/${{ secrets.MAESTER_SCRIPTS_PATH }}/* .github/maester/
 
       - name: Run WOC-365 for ${{ matrix.tenant.customer_name }} - ${{ matrix.tenant.tenant_name }} 🔥
         id: maester
@@ -171,7 +171,7 @@ jobs:
         id: pack
         run: node .github/maester/pack.js
         env:
-          FLAT_JSON: ${{ env.OUTPUT_DIR }}/flat-${{ matrix.tenant.tenant_id }}.json
+          FLAT_JSON: ${{ secrets.OUTPUT_DIR }}/flat-${{ matrix.tenant.tenant_id }}.json
           TESTS_TOTAL:  ${{ steps.maester.outputs.tests_total }}
           TESTS_PASSED: ${{ steps.maester.outputs.tests_passed }}
           TESTS_FAILED: ${{ steps.maester.outputs.tests_failed }}
@@ -188,8 +188,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ARTIFACT_PREFIX }}-${{ matrix.tenant.customer_id }}-${{ matrix.tenant.tenant_id }}-${{ strategy.job-index }}
-          path: ${{ env.OUTPUT_DIR }}/*
+          name: ${{ secrets.ARTIFACT_PREFIX }}-${{ matrix.tenant.customer_id }}-${{ matrix.tenant.tenant_id }}-${{ strategy.job-index }}
+          path: ${{ secrets.OUTPUT_DIR }}/*
           retention-days: 14
 
       - name: Write status for ${{ matrix.tenant.customer_name }} 📃
@@ -219,13 +219,13 @@ jobs:
       - name: Fetch private repo resources
         uses: actions/checkout@v4
         with:
-          repository: ${{ env.PRIVATE_REPO_OWNER }}/${{ env.PRIVATE_REPO_NAME }}
+          repository: ${{ secrets.PRIVATE_REPO_OWNER }}/${{ secrets.PRIVATE_REPO_NAME }}
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
-          path: ${{ env.TEMP_SCRIPTS_DIR }}
-          ref: ${{ env.PRIVATE_REPO_BRANCH }}
+          path: ${{ secrets.TEMP_SCRIPTS_DIR }}
+          ref: ${{ secrets.PRIVATE_REPO_BRANCH }}
           sparse-checkout: |
-            ${{ env.MAESTER_SCRIPTS_PATH }}
-            ${{ env.PACKAGE_FILES_PATH }}
+            ${{ secrets.MAESTER_SCRIPTS_PATH }}
+            ${{ secrets.PACKAGE_FILES_PATH }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -234,14 +234,14 @@ jobs:
 
       - name: Install dependencies
         run: |
-          cp ${{ env.TEMP_SCRIPTS_DIR }}/${{ env.PACKAGE_FILES_PATH }}/package.json .
-          cp ${{ env.TEMP_SCRIPTS_DIR }}/${{ env.PACKAGE_FILES_PATH }}/package-lock.json .
+          cp ${{ secrets.TEMP_SCRIPTS_DIR }}/${{ secrets.PACKAGE_FILES_PATH }}/package.json .
+          cp ${{ secrets.TEMP_SCRIPTS_DIR }}/${{ secrets.PACKAGE_FILES_PATH }}/package-lock.json .
           npm ci --no-audit --no-fund
 
       - name: Copy private scripts
         run: |
           mkdir -p .github/maester
-          cp -r ${{ env.TEMP_SCRIPTS_DIR }}/${{ env.MAESTER_SCRIPTS_PATH }}/* .github/maester/
+          cp -r ${{ secrets.TEMP_SCRIPTS_DIR }}/${{ secrets.MAESTER_SCRIPTS_PATH }}/* .github/maester/
 
       - name: Download all per-tenant artifacts
         uses: actions/download-artifact@v4
@@ -268,7 +268,7 @@ jobs:
       - name: Upload dashboard bundle
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.DASHBOARD_ARTIFACT_NAME }}
+          name: ${{ secrets.DASHBOARD_ARTIFACT_NAME }}
           path: |
             dashboard.html
             dashboard-enterprise.css
@@ -302,7 +302,7 @@ jobs:
       - name: Download dashboard artifact
         uses: actions/download-artifact@v4
         with:
-          name: ${{ env.DASHBOARD_ARTIFACT_NAME }}
+          name: ${{ secrets.DASHBOARD_ARTIFACT_NAME }}
           path: site
 
       - name: Use as index.html

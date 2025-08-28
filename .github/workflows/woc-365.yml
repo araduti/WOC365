@@ -1,0 +1,324 @@
+name: Run WOC365 Multi-Tenant 🔥
+
+# Prevent multiple workflow runs from interfering
+concurrency:
+  group: woc-365-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "30 7 * * *"
+  workflow_dispatch:
+    inputs:
+      customer_filter:
+        description: "Customer ID (optional)"
+        required: false
+        type: string
+      tenant_filter:
+        description: "Tenant ID (optional)"
+        required: false
+        type: string
+
+env:
+  # Externalized paths and names for security
+  PRIVATE_REPO_OWNER: ${{ vars.PRIVATE_REPO_OWNER }}
+  PRIVATE_REPO_NAME: ${{ vars.PRIVATE_REPO_NAME }}
+  PRIVATE_REPO_BRANCH: ${{ vars.PRIVATE_REPO_BRANCH }}
+  CUSTOMERS_CONFIG_PATH: ${{ vars.CUSTOMERS_CONFIG_PATH }}
+  MAESTER_SCRIPTS_PATH: ${{ vars.MAESTER_SCRIPTS_PATH }}
+  PACKAGE_FILES_PATH: ${{ vars.PACKAGE_FILES_PATH }}
+  TEMP_SCRIPTS_DIR: ${{ vars.TEMP_SCRIPTS_DIR }}
+  OUTPUT_DIR: ${{ vars.OUTPUT_DIR }}
+  ARTIFACT_PREFIX: ${{ vars.ARTIFACT_PREFIX }}
+  DASHBOARD_ARTIFACT_NAME: ${{ vars.DASHBOARD_ARTIFACT_NAME }}
+
+jobs:
+  generate-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      tenant_list: ${{ steps.generate.outputs.tenant_list }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch private repo resources
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PRIVATE_REPO_OWNER }}/${{ env.PRIVATE_REPO_NAME }}
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: ${{ env.TEMP_SCRIPTS_DIR }}
+          ref: ${{ env.PRIVATE_REPO_BRANCH }}
+          sparse-checkout: |
+            ${{ env.CUSTOMERS_CONFIG_PATH }}
+            ${{ env.MAESTER_SCRIPTS_PATH }}
+            ${{ env.PACKAGE_FILES_PATH }}
+
+      - name: Generate tenant matrix
+        id: generate
+        uses: actions/github-script@v7
+        env:
+          CUSTOMER_FILTER: ${{ github.event.inputs.customer_filter }}
+          TENANT_FILTER: ${{ github.event.inputs.tenant_filter }}
+          CONFIG_PATH: ${{ env.TEMP_SCRIPTS_DIR }}/${{ env.CUSTOMERS_CONFIG_PATH }}
+        with:
+          script: |
+            const fs = require('fs');
+            const path = process.env.CONFIG_PATH;
+            if (!fs.existsSync(path)) {
+              core.setFailed(`Configuration file not found at: ${path}`);
+              return;
+            }
+            
+            const cfg = JSON.parse(fs.readFileSync(path, 'utf8'));
+            const cf = (process.env.CUSTOMER_FILTER || '').trim();
+            const tf = (process.env.TENANT_FILTER || '').trim();
+
+            const out = [];
+            for (const c of cfg.customers || []) {
+              if (cf && c.customer_id !== cf) continue;
+              for (const t of c.tenants || []) {
+                if (tf && t.tenant_id !== tf) continue;
+                out.push({
+                  customer_id:   c.customer_id,
+                  customer_name: c.customer_name || c.customer_id,
+                  tenant_id:     t.tenant_id,
+                  tenant_name:   t.tenant_name || t.tenant_id,
+                  client_id:     t.client_id,
+                  environment:   t.environment || 'production',
+                  sla_tier:      c.sla_tier || 'standard'
+                });
+              }
+            }
+
+            core.setOutput('tenant_list', JSON.stringify(out));
+            console.log(`Generated matrix for ${out.length} tenants`);
+
+      - name: Clean up private resources
+        if: always()
+        run: rm -rf ${{ env.TEMP_SCRIPTS_DIR }}
+
+  test-tenants:
+    needs: generate-matrix
+    if: ${{ needs.generate-matrix.outputs.tenant_list != '[]' && needs.generate-matrix.outputs.tenant_list != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      id-token: write
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        tenant: ${{ fromJson(needs.generate-matrix.outputs.tenant_list) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch private repo resources
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PRIVATE_REPO_OWNER }}/${{ env.PRIVATE_REPO_NAME }}
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: ${{ env.TEMP_SCRIPTS_DIR }}
+          ref: ${{ env.PRIVATE_REPO_BRANCH }}
+          sparse-checkout: |
+            ${{ env.MAESTER_SCRIPTS_PATH }}
+            ${{ env.PACKAGE_FILES_PATH }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: |
+          cp ${{ env.TEMP_SCRIPTS_DIR }}/${{ env.PACKAGE_FILES_PATH }}/package.json .
+          cp ${{ env.TEMP_SCRIPTS_DIR }}/${{ env.PACKAGE_FILES_PATH }}/package-lock.json .
+          npm ci --no-audit --no-fund
+
+      - name: Copy private scripts
+        run: |
+          mkdir -p .github/maester
+          cp -r ${{ env.TEMP_SCRIPTS_DIR }}/${{ env.MAESTER_SCRIPTS_PATH }}/* .github/maester/
+
+      - name: Run WOC-365 for ${{ matrix.tenant.customer_name }} - ${{ matrix.tenant.tenant_name }} 🔥
+        id: maester
+        uses: maester365/maester-action@main
+        with:
+          tenant_id: ${{ matrix.tenant.tenant_id }}
+          client_id: ${{ matrix.tenant.client_id }}
+          include_public_tests: true
+          include_private_tests: true
+          include_exchange: true
+          include_teams: true
+          maester_version: latest
+          disable_telemetry: false
+          step_summary: false
+          artifact_upload: false
+
+      - name: Flatten Maester results
+        id: flatten
+        shell: pwsh
+        run: ./.github/maester/flatten.ps1 `
+              -ResultsJson "${{ steps.maester.outputs.results_json }}" `
+              -TenantId "${{ matrix.tenant.tenant_id }}" `
+              -OutDir ${{ env.OUTPUT_DIR }}
+
+      - name: Package result + metadata
+        id: pack
+        run: node .github/maester/pack.js
+        env:
+          FLAT_JSON: ${{ env.OUTPUT_DIR }}/flat-${{ matrix.tenant.tenant_id }}.json
+          TESTS_TOTAL:  ${{ steps.maester.outputs.tests_total }}
+          TESTS_PASSED: ${{ steps.maester.outputs.tests_passed }}
+          TESTS_FAILED: ${{ steps.maester.outputs.tests_failed }}
+          TESTS_SKIPPED: ${{ steps.maester.outputs.tests_skipped }}
+          RESULT:       ${{ steps.maester.outputs.result }}
+          CUSTOMER_ID:  ${{ matrix.tenant.customer_id }}
+          CUSTOMER_NAME: ${{ matrix.tenant.customer_name }}
+          TENANT_ID:    ${{ matrix.tenant.tenant_id }}
+          TENANT_NAME:  ${{ matrix.tenant.tenant_name }}
+          ENVIRONMENT:  ${{ matrix.tenant.environment }}
+          SLA_TIER:     ${{ matrix.tenant.sla_tier }}
+
+      - name: Upload per-tenant artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_PREFIX }}-${{ matrix.tenant.customer_id }}-${{ matrix.tenant.tenant_id }}-${{ strategy.job-index }}
+          path: ${{ env.OUTPUT_DIR }}/*
+          retention-days: 14
+
+      - name: Write status for ${{ matrix.tenant.customer_name }} 📃
+        shell: bash
+        run: |
+          {
+            echo "### ${{ matrix.tenant.customer_name }} - ${{ matrix.tenant.tenant_name }}"
+            echo "✅ **${{ steps.maester.outputs.tests_passed }}** passed | ❌ **${{ steps.maester.outputs.tests_failed }}** failed | 📊 **${{ steps.maester.outputs.tests_total }}** total"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Clean up private resources
+        if: always()
+        run: |
+          rm -rf ${{ env.TEMP_SCRIPTS_DIR }}
+          rm -rf .github/maester
+          rm package.json package-lock.json
+
+  aggregate:
+    name: Aggregate Maester reports
+    needs: test-tenants
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch private repo resources
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PRIVATE_REPO_OWNER }}/${{ env.PRIVATE_REPO_NAME }}
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: ${{ env.TEMP_SCRIPTS_DIR }}
+          ref: ${{ env.PRIVATE_REPO_BRANCH }}
+          sparse-checkout: |
+            ${{ env.MAESTER_SCRIPTS_PATH }}
+            ${{ env.PACKAGE_FILES_PATH }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: |
+          cp ${{ env.TEMP_SCRIPTS_DIR }}/${{ env.PACKAGE_FILES_PATH }}/package.json .
+          cp ${{ env.TEMP_SCRIPTS_DIR }}/${{ env.PACKAGE_FILES_PATH }}/package-lock.json .
+          npm ci --no-audit --no-fund
+
+      - name: Copy private scripts
+        run: |
+          mkdir -p .github/maester
+          cp -r ${{ env.TEMP_SCRIPTS_DIR }}/${{ env.MAESTER_SCRIPTS_PATH }}/* .github/maester/
+
+      - name: Download all per-tenant artifacts
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: ${{ env.ARTIFACT_PREFIX }}-*
+          merge-multiple: true
+          path: collected
+
+      - name: Combine JSON
+        shell: bash
+        run: |
+          set -euo pipefail
+          if compgen -G "collected/result-*.json" > /dev/null; then
+            jq -s '.' collected/result-*.json > combined.json
+          else
+            echo "[]" > combined.json
+          fi
+          echo "Combined entries: $(jq length combined.json)"
+
+      - name: Build dashboard.html
+        run: node .github/maester/build-dashboard.js
+
+      - name: Upload dashboard bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.DASHBOARD_ARTIFACT_NAME }}
+          path: |
+            dashboard.html
+            dashboard-enterprise.css
+            styles
+          retention-days: 30
+
+      - name: Link in run summary
+        shell: bash
+        run: |
+          echo "### Combined report" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Artifact: **${{ env.DASHBOARD_ARTIFACT_NAME }}** (download to view \`dashboard.html\`)." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Clean up private resources
+        if: always()
+        run: |
+          rm -rf ${{ env.TEMP_SCRIPTS_DIR }}
+          rm -rf .github/maester
+          rm package.json package-lock.json
+
+  publish-pages:
+    name: Publish dashboard to GitHub Pages
+    needs: aggregate
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Download dashboard artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.DASHBOARD_ARTIFACT_NAME }}
+          path: site
+
+      - name: Use as index.html
+        run: mv site/dashboard.html site/index.html
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
+
+      - name: Link to Pages in summary
+        shell: bash
+        run: |
+          echo "### Live dashboard" >> "$GITHUB_STEP_SUMMARY"
+          echo "- URL: ${{ steps.deploy.outputs.page_url }}" >> "$GITHUB_STEP_SUMMARY"
